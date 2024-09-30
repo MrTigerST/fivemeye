@@ -25,7 +25,7 @@ jobs:
             echo '{"players": []}' > data/results.json
           fi
 
-      - name: Call API for each server ID and update results.json with players
+      - name: Call API for each server ID and update results.json with players and detect alt accounts
         run: |
           if [ ! -f servers.json ]; then
             exit 1
@@ -53,15 +53,25 @@ jobs:
                 continue
               fi
 
-              existingPlayer=$(jq -r --argjson newPlayer "$player" '.players[] | select(.identifiers | inside($newPlayer.identifiers))' data/results.json)
+              existingPlayer=$(jq -r --argjson newPlayer "$player" '
+                .players[] | select(.identifiers | inside($newPlayer.identifiers))' data/results.json)
+
+              altAccountDetected=$(jq -r --argjson newPlayer "$player" '
+                .players[] | select((.identifiers | inside($newPlayer.identifiers | join(","))) and (.identifiers != $newPlayer.identifiers))' data/results.json)
 
               if [ -z "$existingPlayer" ]; then
+                if [ -n "$altAccountDetected" ]; then
+                  player=$(echo "$player" | jq '. + {isAltAccount: true}')
+                else
+                  player=$(echo "$player" | jq '. + {isAltAccount: false}')
+                fi
                 echo "$player" | jq '.' >> tmp_new_players.json
               else
-                jq --arg serverName "$serverName" --argjson newPlayer "$player" '
+                jq --arg serverName "$serverName" --argjson newPlayer "$player" --arg altDetected "$altAccountDetected" '
                   .players |= map(
                     if (.identifiers | inside($newPlayer.identifiers)) then
-                      .lastServer = $serverName
+                      .lastServer = $serverName |
+                      if $altDetected != "" then .isAltAccount = true else . end
                     else
                       .
                     end
