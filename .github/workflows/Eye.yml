@@ -1,0 +1,104 @@
+name: Eye
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install jq
+
+      - name: Ensure results.json exists
+        run: |
+          if [ ! -f data/results.json ]; then
+            echo '{"players": []}' > data/results.json
+          fi
+
+      - name: Call API for each server ID and update results.json with players
+        run: |
+          if [ ! -f servers.json ]; then
+            exit 1
+          fi
+
+          for id in $(jq -r '.servers[]' servers.json); do
+            response=$(curl -s --max-time 20 "https://servers-frontend.fivem.net/api/servers/single/$id")
+
+            if [ $? -ne 0 ]; then
+              continue
+            fi
+
+            if ! echo "$response" | jq empty > /dev/null 2>&1; then
+              continue
+            fi
+
+            players=$(echo "$response" | jq -c '.Data.players')
+            serverName=$(echo "$response" | jq -r '.Data.hostname')
+
+            echo "$players" | jq -c '.[]' | while read -r player; do
+              player=$(echo "$player" | jq --arg serverName "$serverName" '. + {lastServer: $serverName}')
+              identifiers=$(echo "$player" | jq -r '.identifiers | .[]')
+
+              if [ -z "$identifiers" ]; then
+                continue
+              fi
+
+              existingPlayer=$(jq -r --argjson newPlayer "$player" '.players[] | select(.identifiers | inside($newPlayer.identifiers))' data/results.json)
+
+              if [ -z "$existingPlayer" ]; then
+                echo "$player" | jq '.' >> tmp_new_players.json
+              else
+                jq --arg serverName "$serverName" --argjson newPlayer "$player" '
+                  .players |= map(
+                    if (.identifiers | inside($newPlayer.identifiers)) then
+                      .lastServer = $serverName
+                    else
+                      .
+                    end
+                  )
+                ' data/results.json > tmp_updated_results.json
+                mv tmp_updated_results.json data/results.json
+              fi
+            done
+
+            sleep 1
+          done
+
+          if [ -f tmp_new_players.json ]; then
+            newPlayers=$(jq -s '{players: .}' tmp_new_players.json)
+            jq -s '.[0] * {players: (.[0].players + .[1].players)}' data/results.json <(echo "$newPlayers") > tmp_combined_players.json
+            mv tmp_combined_players.json data/results.json
+            rm tmp_new_players.json
+          fi
+
+      - name: Check if results.json is modified
+        run: |
+          git fetch
+          if git diff --quiet HEAD data/results.json; then
+            exit 0
+          fi
+
+      - name: Commit and Push updates if any
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add data/results.json
+          git commit -m "Updated players for Eye" || exit 0
+          git pull --rebase origin main
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Handle exit code 1 gracefully
+        if: failure()
+        run: exit 0
