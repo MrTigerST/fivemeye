@@ -54,10 +54,10 @@ jobs:
               fi
 
               existingPlayer=$(jq -r --argjson newPlayer "$player" '
-                .players[] | select(.identifiers | inside($newPlayer.identifiers))' data/results.json)
+                .players[] | select([.identifiers[]] | any(. == $newPlayer.identifiers[]))' data/results.json)
 
               altAccountDetected=$(jq -r --argjson newPlayer "$player" '
-                .players[] | select((.identifiers | inside($newPlayer.identifiers | join(","))) and (.identifiers != $newPlayer.identifiers))' data/results.json)
+                .players[] | select([.identifiers[]] | any(. == $newPlayer.identifiers[])) and .identifiers != $newPlayer.identifiers' data/results.json)
 
               if [ -z "$existingPlayer" ]; then
                 if [ -n "$altAccountDetected" ]; then
@@ -69,7 +69,7 @@ jobs:
               else
                 jq --arg serverName "$serverName" --argjson newPlayer "$player" --arg altDetected "$altAccountDetected" '
                   .players |= map(
-                    if (.identifiers | inside($newPlayer.identifiers)) then
+                    if ([.identifiers[]] | any(. == $newPlayer.identifiers[])) then
                       .lastServer = $serverName |
                       if $altDetected != "" then .isAltAccount = true else . end
                     else
